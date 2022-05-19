@@ -4,10 +4,9 @@
 package main
 
 import (
-	"context"
 	"io"
 
-	dockerAuth "github.com/Azure/acr-cli/auth/docker"
+	orasgoAuth "github.com/Azure/acr-cli/auth/oras-go"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -43,14 +42,13 @@ func runLogout(opts logoutOpts) error {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
 
-	client, err := dockerAuth.NewClient(opts.configPaths...)
+	//client, err := dockerAuth.NewClient(opts.configPaths...)
+	store, err := orasgoAuth.NewStore()
 	if err != nil {
 		return err
 	}
 
-	ctx := context.Background()
-
-	return client.Logout(ctx, opts.hostname)
+	return store.Erase(opts.hostname)
 }
 
 type logoutOpts struct {

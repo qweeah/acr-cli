@@ -9,14 +9,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"strings"
 
-	dockerAuth "github.com/Azure/acr-cli/auth/docker"
+	orasgoAuth "github.com/Azure/acr-cli/auth/oras-go"
 	"github.com/moby/term"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+
+	"oras.land/oras-go/v2/registry/remote"
 )
 
 const (
@@ -38,6 +39,9 @@ type loginOpts struct {
 	configs   []string
 	debug     bool
 	fromStdin bool
+	insecure  bool
+	plainHTTP bool
+	verbose   bool
 }
 
 // newLoginCmd is used when the program is used locally and not inside a container.
@@ -62,15 +66,24 @@ func newLoginCmd(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVarP(&opts.username, "username", "u", "", "the registry username")
 	cmd.Flags().StringVarP(&opts.password, "password", "p", "", "the registry password or identity token")
 	cmd.Flags().BoolVarP(&opts.fromStdin, "password-stdin", "", false, "read password or identity token from stdin")
+	cmd.Flags().BoolVarP(&opts.insecure, "insecure", "k", false, "allow connections to SSL registry without certs")
+	cmd.Flags().BoolVarP(&opts.plainHTTP, "plain-http", "", false, "allow insecure connections to registry without SSL")
+	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "v", false, "verbose output")
 	return cmd
 }
 
-func runLogin(opts loginOpts) error {
+func runLogin(opts loginOpts) (err error) {
+	var logLevel logrus.Level
 	if opts.debug {
-		logrus.SetLevel(logrus.DebugLevel)
+		logLevel = logrus.DebugLevel
+	} else if opts.verbose {
+		logLevel = logrus.InfoLevel
+	} else {
+		logLevel = logrus.WarnLevel
 	}
+	ctx, _ := orasgoAuth.WithLoggerLevel(context.Background(), logLevel)
 
-	client, err := dockerAuth.NewClient(opts.configs...)
+	store, err := orasgoAuth.NewStore(opts.configs...)
 	if err != nil {
 		return err
 	}
@@ -78,7 +91,7 @@ func runLogin(opts loginOpts) error {
 	var username string
 	var passwordBytes []byte
 	if opts.fromStdin {
-		passwordBytes, err = ioutil.ReadAll(os.Stdin)
+		passwordBytes, err = io.ReadAll(os.Stdin)
 		if err != nil {
 			return err
 		}
@@ -102,8 +115,22 @@ func runLogin(opts loginOpts) error {
 		fmt.Fprintln(os.Stderr, "WARNING! Using --password via the CLI is insecure. Use --password-stdin.")
 	}
 
-	ctx := context.Background()
-	if err := client.Login(ctx, opts.hostname, opts.username, opts.password); err != nil {
+	// Ping to ensure credential is valid
+	remote, err := remote.NewRegistry(opts.hostname)
+	if err != nil {
+		return err
+	}
+	remote.PlainHTTP = opts.plainHTTP
+	cred := orasgoAuth.Credential(opts.username, opts.password)
+	remote.Client = orasgoAuth.NewClient(orasgoAuth.ClientOptions{
+		Credential: cred,
+		Debug:      opts.debug,
+	})
+	if err = remote.Ping(ctx); err != nil {
+		return err
+	}
+	// Store the validated credential
+	if err := store.Store(opts.hostname, cred); err != nil {
 		return err
 	}
 
